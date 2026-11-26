@@ -1,0 +1,30 @@
+2026-11-20 10:30:01 INFO  [api-gateway] Server started on port 8080
+2026-11-20 10:30:02 INFO  [order-service] Connected to database orders_db (pool_size=20)
+2026-11-20 10:30:02 INFO  [payment-service] Payment provider client initialized
+2026-11-20 10:32:15 INFO  [api-gateway] GET /orders 200 45ms
+2026-11-20 10:33:40 INFO  [order-service] Order #1001 created for user 5521
+2026-11-20 10:33:41 INFO  [payment-service] Payment for order #1001 succeeded
+2026-11-20 10:35:12 INFO  [api-gateway] POST /orders 201 120ms
+2026-11-20 10:38:00 INFO  [deploy] Deployed order-service v2.4.1 (config change: db.pool_size 20 -> 5)
+2026-11-20 10:38:05 INFO  [order-service] Connected to database orders_db (pool_size=5)
+2026-11-20 10:40:10 INFO  [api-gateway] Traffic increased: 180 req/min
+2026-11-20 10:40:22 WARN  [order-service] Connection pool usage at 100% (5/5 in use)
+2026-11-20 10:40:25 WARN  [order-service] Waiting for available DB connection (queue length: 12)
+2026-11-20 10:40:31 ERROR [order-service] Timeout acquiring DB connection after 5000ms
+2026-11-20 10:40:31 ERROR [order-service] Failed to create order for user 7734: DBConnectionTimeout
+2026-11-20 10:40:32 ERROR [api-gateway] POST /orders 500 5012ms
+2026-11-20 10:40:35 ERROR [order-service] Timeout acquiring DB connection after 5000ms
+2026-11-20 10:40:36 ERROR [payment-service] Order lookup failed for order #1014: upstream order-service returned 500
+2026-11-20 10:40:36 ERROR [payment-service] Payment aborted for order #1014
+2026-11-20 10:40:40 WARN  [api-gateway] Error rate above threshold: 18%
+2026-11-20 10:40:44 ERROR [order-service] Timeout acquiring DB connection after 5000ms
+2026-11-20 10:40:45 ERROR [api-gateway] POST /orders 500 5008ms
+2026-11-20 10:40:50 INFO  [api-gateway] GET /health 200 3ms
+2026-11-20 10:41:02 ERROR [payment-service] Payment aborted for order #1017
+2026-11-20 10:41:10 WARN  [order-service] Connection pool usage at 100% (5/5 in use)
+2026-11-20 10:41:15 ERROR [order-service] Timeout acquiring DB connection after 5000ms
+2026-11-20 10:41:16 ERROR [api-gateway] POST /orders 500 5011ms
+2026-11-20 10:41:30 WARN  [api-gateway] Error rate above threshold: 31%
+2026-11-20 10:42:05 ERROR [order-service] Failed to create order for user 8102: DBConnectionTimeout
+2026-11-20 10:42:06 ERROR [payment-service] Payment aborted for order #1021
+2026-11-20 10:42:30 INFO  [api-gateway] GET /orders 200 52ms
