@@ -1,10 +1,14 @@
+import sqlite3
+from datetime import datetime
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import interrupt, Command
 
 from llm import ask_claude
+
+DB_PATH = "incidents.db"  # shared by the watcher and the Streamlit app
 
 
 # ---------- 1. Shared state: every step reads from and writes to this ----------
@@ -66,8 +70,9 @@ Keep each part short and practical."""
 
 
 def approval(state: IncidentState) -> dict:
-    # The graph PAUSES here and saves its state.
-    # It resumes when the app calls resume_investigation() with your decision.
+    # The graph PAUSES here and its state is saved to incidents.db.
+    # It resumes when someone calls resume_investigation() with a decision,
+    # even from a different program (like the Streamlit app).
     decision = interrupt({"fix_plan": state["fix_plan"]})
     return {
         "approved": decision["approved"],
@@ -99,7 +104,31 @@ def after_approval(state: IncidentState) -> str:
     return END                # rejected with no feedback: stop
 
 
-# ---------- 4. Connect the steps into a graph ----------
+# ---------- 4. Small incidents table (so the app can list investigations) ----------
+def _run_sql(query: str, params: tuple = ()) -> list:
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        rows = conn.execute(query, params).fetchall()
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
+
+
+def register_incident(thread_id: str, title: str, source: str):
+    _run_sql(
+        "INSERT OR IGNORE INTO incidents (thread_id, title, source, created_at) VALUES (?, ?, ?, ?)",
+        (thread_id, title, source, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+
+
+def list_incidents() -> list[dict]:
+    """All investigations, newest first."""
+    rows = _run_sql("SELECT thread_id, title, source, created_at FROM incidents ORDER BY created_at DESC")
+    return [dict(zip(["thread_id", "title", "source", "created_at"], row)) for row in rows]
+
+
+# ---------- 5. Connect the steps into a graph ----------
 def build_graph():
     builder = StateGraph(IncidentState)
 
@@ -116,44 +145,73 @@ def build_graph():
     builder.add_conditional_edges("approval", after_approval, ["final_report", "suggest_fix", END])
     builder.add_edge("final_report", END)
 
-    # The checkpointer saves state so the graph can pause and resume
-    return builder.compile(checkpointer=InMemorySaver())
+    # Save state to a SQLite file so other programs can see and resume it
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")  # lets two programs use the file at once
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS incidents "
+        "(thread_id TEXT PRIMARY KEY, title TEXT, source TEXT, created_at TEXT)"
+    )
+    conn.commit()
+
+    return builder.compile(checkpointer=SqliteSaver(conn))
 
 
-# ---------- 5. Helpers the Streamlit app will use ----------
-def start_investigation(graph, log_text: str, thread_id: str) -> dict:
+# ---------- 6. Helpers used by the app and the watcher ----------
+def _config(thread_id: str) -> dict:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def start_investigation(graph, log_text: str, thread_id: str,
+                        title: str = "Uploaded log", source: str = "upload") -> dict:
     """Runs analyze -> diagnose -> suggest_fix, then pauses at approval."""
-    config = {"configurable": {"thread_id": thread_id}}
-    graph.invoke({"log_text": log_text}, config)
-    return graph.get_state(config).values
+    register_incident(thread_id, title, source)
+    graph.invoke({"log_text": log_text}, _config(thread_id))
+    return graph.get_state(_config(thread_id)).values
 
 
 def resume_investigation(graph, thread_id: str, approved: bool, feedback: str = "") -> dict:
-    """Continues after you approve or reject."""
-    config = {"configurable": {"thread_id": thread_id}}
-    graph.invoke(Command(resume={"approved": approved, "feedback": feedback}), config)
-    return graph.get_state(config).values
+    """Continues after someone approves or rejects."""
+    graph.invoke(Command(resume={"approved": approved, "feedback": feedback}), _config(thread_id))
+    return graph.get_state(_config(thread_id)).values
+
+
+def get_investigation(graph, thread_id: str) -> dict:
+    return graph.get_state(_config(thread_id)).values
 
 
 def is_waiting_for_approval(graph, thread_id: str) -> bool:
-    config = {"configurable": {"thread_id": thread_id}}
-    return "approval" in graph.get_state(config).next
+    return "approval" in graph.get_state(_config(thread_id)).next
+
+
+def get_status(graph, thread_id: str) -> str:
+    """investigating / waiting_for_approval / resolved / stopped"""
+    snapshot = graph.get_state(_config(thread_id))
+    if "approval" in snapshot.next:
+        return "waiting_for_approval"
+    if snapshot.values.get("report"):
+        return "resolved"
+    if not snapshot.next and snapshot.values.get("fix_plan"):
+        return "stopped"  # rejected without feedback
+    return "investigating"
 
 
 # ---------- Quick terminal test: run `python graph.py` ----------
 if __name__ == "__main__":
+    import uuid
     from log_parser import prepare_log
 
     with open("sample_logs/sample_app.log", encoding="utf-8") as f:
         log_text = prepare_log(f.read())["llm_text"]
 
     graph = build_graph()
-    thread = "test-1"
+    thread = str(uuid.uuid4())
 
     print("Running investigation...\n")
-    state = start_investigation(graph, log_text, thread)
-    print("=== ANALYSIS ===\n", state["analysis"], "\n")
+    state = start_investigation(graph, log_text, thread, title="Terminal test", source="test")
     print("=== DIAGNOSIS ===\n", state["diagnosis"], "\n")
+    print("Status:", get_status(graph, thread))
+    print("Saved incidents:", list_incidents(), "\n")
 
     while is_waiting_for_approval(graph, thread):
         print("=== PROPOSED FIX ===\n", state["fix_plan"], "\n")
@@ -164,7 +222,6 @@ if __name__ == "__main__":
             feedback = input("Why reject? (leave empty to stop): ").strip()
             state = resume_investigation(graph, thread, approved=False, feedback=feedback)
 
+    print("\nFinal status:", get_status(graph, thread))
     if state.get("report"):
         print("\n=== FINAL REPORT ===\n", state["report"])
-    else:
-        print("\nInvestigation stopped without a report.")
